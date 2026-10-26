@@ -17,9 +17,7 @@ def calculate_md5(input_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Calculate the MD5 hash of a file."
-    )
+    parser = argparse.ArgumentParser(description="Calculate the MD5 hash of a file.")
     parser.add_argument("input_file", help="Path to the input file")
     parser.add_argument("output_file", help="Path to the result file")
     args = parser.parse_args()

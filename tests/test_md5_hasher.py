@@ -7,7 +7,6 @@ from src.md5_hasher import calculate_md5
 
 
 class TestCalculateMd5(unittest.TestCase):
-
     def test_calculate_md5(self):
         content = b"hello"
         expected = hashlib.md5(content).hexdigest()
