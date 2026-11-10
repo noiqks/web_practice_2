@@ -2,23 +2,73 @@ import json
 
 import requests
 
+DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_TIMEOUT = 10
+REQUIRED_LANGUAGE = "ru-RU"
+JSON_CONTENT_TYPE = "text/json"
+BODY_METHODS = {"POST", "PUT", "PATCH"}
+
+ALLOWED_MESSAGE_FILTERS = {
+    "uid",
+    "created",
+    "payload",
+    "tags",
+    "stage",
+    "launched",
+}
+
+ALLOWED_OUTPUT_FILTERS = {
+    "uid",
+    "created",
+    "response",
+    "stage",
+    "failure",
+    "cache_hit",
+}
+
+
+def _compact(values):
+    return {
+        key: value
+        for key, value in values.items()
+        if value is not None
+    }
+
+
+def _validate_filters(filters, allowed):
+    unknown = set(filters) - allowed
+    if unknown:
+        raise TypeError(f"Unknown filters: {sorted(unknown)}")
+
 
 class ApiClient:
-    def __init__(self, base_url="http://127.0.0.1:8000", transport=None):
+    def __init__(
+        self,
+        base_url=DEFAULT_BASE_URL,
+        transport=None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.transport = transport
         self.session = requests.Session()
 
-    def _request(self, method, route, params=None, body=None, headers=None):
+    def _request(
+        self,
+        method,
+        route,
+        params=None,
+        body=None,
+        headers=None,
+    ):
         if headers is None:
-            request_headers = {"Accept-Language": "ru-RU"}
-            if method in {"POST", "PUT", "PATCH"}:
-                request_headers["Content-Type"] = "text/json"
+            request_headers = {"Accept-Language": REQUIRED_LANGUAGE}
+            if method in BODY_METHODS:
+                request_headers["Content-Type"] = JSON_CONTENT_TYPE
         else:
             request_headers = headers
 
         url = self.base_url + route
         encoded_body = None if body is None else json.dumps(body)
+
         if self.transport is not None:
             return self.transport.request(
                 method,
@@ -34,10 +84,15 @@ class ApiClient:
             params=params,
             data=encoded_body,
             headers=request_headers,
-            timeout=10,
+            timeout=DEFAULT_TIMEOUT,
         )
 
-    def post_service_api_v2_submit_client(self, platform, user_agent, headers=None):
+    def post_service_api_v2_submit_client(
+        self,
+        platform,
+        user_agent,
+        headers=None,
+    ):
         return self._request(
             "POST",
             "/service/api/v2/submit-client",
@@ -46,18 +101,11 @@ class ApiClient:
         )
 
     def get_service_api_v2_collect_client(
-        self, uid=None, created=None, platform=None, user_agent=None, headers=None
+        self,
+        **filters,
     ):
-        params = {
-            key: value
-            for key, value in {
-                "uid": uid,
-                "created": created,
-                "platform": platform,
-                "user_agent": user_agent,
-            }.items()
-            if value is not None
-        }
+        headers = filters.pop("headers", None)
+        params = _compact(filters)
         return self._request(
             "GET",
             "/service/api/v2/collect-client",
@@ -65,7 +113,12 @@ class ApiClient:
             headers=headers,
         )
 
-    def put_service_api_v2_adjust_client(self, uid, body, headers=None):
+    def put_service_api_v2_adjust_client(
+        self,
+        uid,
+        body,
+        headers=None,
+    ):
         return self._request(
             "PUT",
             f"/service/api/v2/adjust-client/{uid}",
@@ -74,43 +127,43 @@ class ApiClient:
         )
 
     def post_service_api_v2_submit_message(
-        self, client, payload, tags="", headers=None
+        self,
+        client,
+        payload,
+        tags="",
+        headers=None,
     ):
         return self._request(
             "POST",
             "/service/api/v2/submit-message",
-            params={"client": client, "payload": payload, "tags": tags},
+            params={
+                "client": client,
+                "payload": payload,
+                "tags": tags,
+            },
             headers=headers,
         )
 
     def get_service_api_v2_collect_message(
         self,
         client,
-        uid=None,
-        created=None,
-        payload=None,
-        tags=None,
-        stage=None,
-        launched=None,
-        headers=None,
+        **filters,
     ):
-        params = {
-            "uid": uid,
-            "created": created,
-            "payload": payload,
-            "tags": tags,
-            "stage": stage,
-            "launched": launched,
-        }
-        params = {key: value for key, value in params.items() if value is not None}
+        headers = filters.pop("headers", None)
+        _validate_filters(filters, ALLOWED_MESSAGE_FILTERS)
         return self._request(
             "GET",
             f"/service/api/v2/collect-message/{client}",
-            params=params,
+            params=_compact(filters),
             headers=headers,
         )
 
-    def put_service_api_v2_adjust_message(self, uid, body, headers=None):
+    def put_service_api_v2_adjust_message(
+        self,
+        uid,
+        body,
+        headers=None,
+    ):
         return self._request(
             "PUT",
             f"/service/api/v2/adjust-message/{uid}",
@@ -121,29 +174,20 @@ class ApiClient:
     def get_service_api_v2_collect_output(
         self,
         message,
-        uid=None,
-        created=None,
-        response=None,
-        stage=None,
-        failure=None,
-        cache_hit=None,
-        headers=None,
+        **filters,
     ):
-        params = {
-            "uid": uid,
-            "created": created,
-            "response": response,
-            "stage": stage,
-            "failure": failure,
-            "cache_hit": cache_hit,
-        }
-        params = {key: value for key, value in params.items() if value is not None}
+        headers = filters.pop("headers", None)
+        _validate_filters(filters, ALLOWED_OUTPUT_FILTERS)
         return self._request(
             "GET",
             f"/service/api/v2/collect-output/{message}",
-            params=params,
+            params=_compact(filters),
             headers=headers,
         )
 
     def get_service_api_v2_collect_report(self, headers=None):
-        return self._request("GET", "/service/api/v2/collect-report", headers=headers)
+        return self._request(
+            "GET",
+            "/service/api/v2/collect-report",
+            headers=headers,
+        )

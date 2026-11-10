@@ -2,6 +2,8 @@ import time
 
 from src.models import Client, Message, Output
 
+DEFAULT_CACHE_HIT = 0
+
 
 class SqliteStore:
     def __init__(self, session_factory):
@@ -144,7 +146,14 @@ class SqliteStore:
         finally:
             session.close()
 
-    def add_output(self, message, response, stage, failure, cache_hit=0):
+    def add_output(
+        self,
+        message,
+        response,
+        stage,
+        failure,
+        cache_hit=DEFAULT_CACHE_HIT,
+    ):
         session = self.session_factory()
 
         try:

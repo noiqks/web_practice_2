@@ -14,6 +14,23 @@ MISSING_INPUT = str(
     PROJECT_ROOT / "examples" / "file-that-does-not-exist.txt"
 )
 
+HTTP_OK = 200
+HTTP_BAD_REQUEST = 400
+HTTP_NOT_FOUND = 404
+HTTP_NOT_ACCEPTABLE = 406
+HTTP_UNSUPPORTED_MEDIA_TYPE = 415
+
+MD5_HEX_LENGTH = 32
+INITIAL_LAUNCHED = 0
+INITIAL_CACHE_HIT = 0
+UPDATED_LAUNCHED = 123
+MISSING_UID = 999999
+CACHE_HIT_MISS = 1
+WRONG_STAGE_VALUE = "0"
+
+MAX_EXAMPLES = 10
+STATEFUL_STEP_COUNT = 12
+
 
 class ApiStateMachine(RuleBasedStateMachine):
     def __init__(self):
@@ -32,7 +49,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             user_agent="state-machine-agent",
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
 
         client = response.json()
         self.client_ids.append(client["uid"])
@@ -42,7 +59,7 @@ class ApiStateMachine(RuleBasedStateMachine):
     def check_initial_client(self, client):
         response = self.api.get_service_api_v2_collect_client()
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
         assert response.json()
 
         response = self.api.get_service_api_v2_collect_client(
@@ -50,7 +67,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             created=client["created"],
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
         assert len(response.json()) == 1
 
         response = self.api.put_service_api_v2_adjust_client(
@@ -58,7 +75,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             {"platform": "test-platform-updated"},
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
         assert response.json()["platform"] == "test-platform-updated"
 
     def create_initial_message(self, client_uid):
@@ -68,7 +85,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             tags="initial",
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
 
         message = response.json()
         self.message_ids.append(message["uid"])
@@ -80,7 +97,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             client_uid
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
         assert response.json()
 
         filtered = self.api.get_service_api_v2_collect_message(
@@ -90,10 +107,10 @@ class ApiStateMachine(RuleBasedStateMachine):
             payload=message["payload"],
             tags="initial",
             stage="skipped",
-            launched=0,
+            launched=INITIAL_LAUNCHED,
         )
 
-        assert filtered.status_code == 200
+        assert filtered.status_code == HTTP_OK
         assert len(filtered.json()) == 1
 
     def check_initial_output(self, message_uid):
@@ -101,7 +118,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             message_uid
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
         assert response.json()
 
         output = response.json()[0]
@@ -116,7 +133,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             cache_hit=output["cache_hit"],
         )
 
-        assert filtered.status_code == 200
+        assert filtered.status_code == HTTP_OK
         assert len(filtered.json()) == 1
 
     @initialize()
@@ -135,7 +152,7 @@ class ApiStateMachine(RuleBasedStateMachine):
 
         response = self.api.get_service_api_v2_collect_report()
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
 
     @rule(
         platform=st.text(
@@ -155,7 +172,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             user_agent,
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
 
         client = response.json()
         self.client_ids.append(client["uid"])
@@ -167,7 +184,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             user_agent=user_agent,
         )
 
-        assert found.status_code == 200
+        assert found.status_code == HTTP_OK
         assert len(found.json()) == 1
         assert found.json()[0]["uid"] == client["uid"]
 
@@ -183,8 +200,8 @@ class ApiStateMachine(RuleBasedStateMachine):
             user_agent="TestClient2",
         )
 
-        assert first_response.status_code == 200
-        assert second_response.status_code == 200
+        assert first_response.status_code == HTTP_OK
+        assert second_response.status_code == HTTP_OK
 
         first_client = first_response.json()
         second_client = second_response.json()
@@ -201,7 +218,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             user_agent="Agent-test-123",
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
 
         client = response.json()
 
@@ -216,7 +233,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             user_agent="Agent-test-123",
         )
 
-        assert found.status_code == 200
+        assert found.status_code == HTTP_OK
         assert len(found.json()) == 1
         assert found.json()[0] == client
 
@@ -243,7 +260,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
 
         client = response.json()
 
@@ -251,25 +268,25 @@ class ApiStateMachine(RuleBasedStateMachine):
         assert client["user_agent"] == user_agent
 
         missing = self.api.put_service_api_v2_adjust_client(
-            999999,
+            MISSING_UID,
             {"platform": "x"},
         )
 
-        assert missing.status_code == 404
+        assert missing.status_code == HTTP_NOT_FOUND
 
         bad_created = self.api.put_service_api_v2_adjust_client(
             uid,
             {"created": "not-an-integer"},
         )
 
-        assert bad_created.status_code == 400
+        assert bad_created.status_code == HTTP_BAD_REQUEST
 
         bad_type = self.api.put_service_api_v2_adjust_client(
             uid,
             {"platform": 123},
         )
 
-        assert bad_type.status_code == 400
+        assert bad_type.status_code == HTTP_BAD_REQUEST
 
     @rule(
         tags=st.text(
@@ -286,7 +303,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             tags=tags,
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
 
         message = response.json()
         message_uid = message["uid"]
@@ -298,19 +315,19 @@ class ApiStateMachine(RuleBasedStateMachine):
             tags=tags,
         )
 
-        assert found.status_code == 200
+        assert found.status_code == HTTP_OK
         assert len(found.json()) == 1
         assert found.json()[0]["uid"] == message_uid
 
         missing_client = (
             self.api.post_service_api_v2_submit_message(
-                client=999999,
+                client=MISSING_UID,
                 payload=EXAMPLE_INPUT,
                 tags=tags,
             )
         )
 
-        assert missing_client.status_code == 404
+        assert missing_client.status_code == HTTP_NOT_FOUND
 
     def create_field_check_message(self):
         client_uid = self.client_ids[0]
@@ -321,7 +338,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             tags="field-check",
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
 
         return client_uid, response.json()
 
@@ -330,7 +347,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         assert message["payload"] == EXAMPLE_INPUT
         assert message["tags"] == "field-check"
         assert message["stage"] == "skipped"
-        assert message["launched"] == 0
+        assert message["launched"] == INITIAL_LAUNCHED
 
         by_stage = (
             self.api.get_service_api_v2_collect_message(
@@ -340,7 +357,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             )
         )
 
-        assert by_stage.status_code == 200
+        assert by_stage.status_code == HTTP_OK
         assert len(by_stage.json()) == 1
 
     def check_message_launched_filter(self, client_uid, message):
@@ -348,22 +365,22 @@ class ApiStateMachine(RuleBasedStateMachine):
             self.api.get_service_api_v2_collect_message(
                 client_uid,
                 uid=message["uid"],
-                launched=0,
+                launched=INITIAL_LAUNCHED,
             )
         )
 
-        assert by_launched.status_code == 200
+        assert by_launched.status_code == HTTP_OK
         assert len(by_launched.json()) == 1
 
         wrong_stage = (
             self.api.get_service_api_v2_collect_message(
                 client_uid,
                 uid=message["uid"],
-                stage="0",
+                stage=WRONG_STAGE_VALUE,
             )
         )
 
-        assert wrong_stage.status_code == 200
+        assert wrong_stage.status_code == HTTP_OK
         assert wrong_stage.json() == []
 
     @rule()
@@ -398,7 +415,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
 
         message = response.json()
 
@@ -407,25 +424,25 @@ class ApiStateMachine(RuleBasedStateMachine):
 
         launched = self.api.put_service_api_v2_adjust_message(
             uid,
-            {"launched": 123},
+            {"launched": UPDATED_LAUNCHED},
         )
 
-        assert launched.status_code == 200
-        assert launched.json()["launched"] == 123
+        assert launched.status_code == HTTP_OK
+        assert launched.json()["launched"] == UPDATED_LAUNCHED
 
         bad_launched = self.api.put_service_api_v2_adjust_message(
             uid,
             {"launched": "later"},
         )
 
-        assert bad_launched.status_code == 400
+        assert bad_launched.status_code == HTTP_BAD_REQUEST
 
         missing = self.api.put_service_api_v2_adjust_message(
-            999999,
+            MISSING_UID,
             {"tags": "missing"},
         )
 
-        assert missing.status_code == 404
+        assert missing.status_code == HTTP_NOT_FOUND
 
     @rule()
     def check_message_update_preserves_other_fields(self):
@@ -437,7 +454,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             tags="before-update",
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
 
         message = response.json()
 
@@ -446,7 +463,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             {"tags": "after-update"},
         )
 
-        assert updated.status_code == 200
+        assert updated.status_code == HTTP_OK
 
         result = updated.json()
 
@@ -467,7 +484,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             tags="output-field-check",
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
 
         return response.json()
 
@@ -476,7 +493,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             message["uid"]
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
         assert response.json()
 
         output = response.json()[0]
@@ -487,7 +504,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             "Task not executed in test mode"
         )
         assert output["failure"] == ""
-        assert output["cache_hit"] == 0
+        assert output["cache_hit"] == INITIAL_CACHE_HIT
         assert isinstance(output["uid"], int)
         assert isinstance(output["created"], int)
 
@@ -501,32 +518,32 @@ class ApiStateMachine(RuleBasedStateMachine):
             response="Task not executed in test mode",
             stage="skipped",
             failure="",
-            cache_hit=0,
+            cache_hit=INITIAL_CACHE_HIT,
         )
 
-        assert filtered.status_code == 200
+        assert filtered.status_code == HTTP_OK
         assert len(filtered.json()) == 1
         assert filtered.json()[0] == output
 
         wrong_stage = (
             self.api.get_service_api_v2_collect_output(
                 message["uid"],
-                stage="0",
+                stage=WRONG_STAGE_VALUE,
             )
         )
 
-        assert wrong_stage.status_code == 200
+        assert wrong_stage.status_code == HTTP_OK
         assert wrong_stage.json() == []
 
     def check_wrong_cache_hit(self, message):
         wrong_cache_hit = (
             self.api.get_service_api_v2_collect_output(
                 message["uid"],
-                cache_hit=1,
+                cache_hit=CACHE_HIT_MISS,
             )
         )
 
-        assert wrong_cache_hit.status_code == 200
+        assert wrong_cache_hit.status_code == HTTP_OK
         assert wrong_cache_hit.json() == []
 
     @rule()
@@ -549,7 +566,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             message_uid
         )
 
-        assert response.status_code == 200
+        assert response.status_code == HTTP_OK
         assert response.json()
 
         output = response.json()[0]
@@ -564,21 +581,21 @@ class ApiStateMachine(RuleBasedStateMachine):
             cache_hit=output["cache_hit"],
         )
 
-        assert filtered.status_code == 200
+        assert filtered.status_code == HTTP_OK
         assert len(filtered.json()) == 1
 
         invalid = self.api.get_service_api_v2_collect_output(
             message_uid,
             stage="not-a-real-stage",
-            cache_hit=1,
+            cache_hit=CACHE_HIT_MISS,
         )
 
-        assert invalid.status_code == 200
+        assert invalid.status_code == HTTP_OK
         assert invalid.json() == []
 
         report = self.api.get_service_api_v2_collect_report()
 
-        assert report.status_code == 200
+        assert report.status_code == HTTP_OK
 
     def check_missing_content_type(self):
         response = self.api.post_service_api_v2_submit_client(
@@ -587,20 +604,20 @@ class ApiStateMachine(RuleBasedStateMachine):
             headers={"Accept-Language": "ru-RU"},
         )
 
-        assert response.status_code == 415
+        assert response.status_code == HTTP_UNSUPPORTED_MEDIA_TYPE
 
     def check_missing_language(self):
         response = self.api.get_service_api_v2_collect_client(
             headers={}
         )
 
-        assert response.status_code == 406
+        assert response.status_code == HTTP_NOT_ACCEPTABLE
 
         response = self.api.get_service_api_v2_collect_report(
             headers={"Accept-Language": "en-US"}
         )
 
-        assert response.status_code == 406
+        assert response.status_code == HTTP_NOT_ACCEPTABLE
 
     def check_header_priority(self):
         response = self.api.post_service_api_v2_submit_client(
@@ -609,7 +626,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             headers={},
         )
 
-        assert response.status_code == 415
+        assert response.status_code == HTTP_UNSUPPORTED_MEDIA_TYPE
 
         docs = self.api._request(
             "GET",
@@ -617,7 +634,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             headers={},
         )
 
-        assert docs.status_code == 200
+        assert docs.status_code == HTTP_OK
 
     @rule()
     def check_required_headers(self):
@@ -634,21 +651,21 @@ class ApiStateMachine(RuleBasedStateMachine):
             ["not", "an", "object"],
         )
 
-        assert response.status_code == 400
+        assert response.status_code == HTTP_BAD_REQUEST
 
         response = self.api.put_service_api_v2_adjust_client(
             self.client_ids[0],
             {"unknown": "field"},
         )
 
-        assert response.status_code == 400
+        assert response.status_code == HTTP_BAD_REQUEST
 
         response = self.api.put_service_api_v2_adjust_message(
             message_uid,
             {"unknown": "field"},
         )
 
-        assert response.status_code == 400
+        assert response.status_code == HTTP_BAD_REQUEST
 
         response = self.api._request(
             "PUT",
@@ -659,7 +676,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             },
         )
 
-        assert response.status_code == 400
+        assert response.status_code == HTTP_BAD_REQUEST
 
     def execute_successful_cli(self, client_uid):
         success = self.api.post_service_api_v2_submit_message(
@@ -668,7 +685,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             tags="real-cli",
         )
 
-        assert success.status_code == 200
+        assert success.status_code == HTTP_OK
 
         message = success.json()
         self.message_ids.append(message["uid"])
@@ -677,9 +694,9 @@ class ApiStateMachine(RuleBasedStateMachine):
             message["uid"]
         )
 
-        assert outputs.status_code == 200
+        assert outputs.status_code == HTTP_OK
         assert outputs.json()[0]["stage"] == "completed"
-        assert len(outputs.json()[0]["response"]) == 32
+        assert len(outputs.json()[0]["response"]) == MD5_HEX_LENGTH
 
     def execute_failed_cli(self, client_uid):
         failure = self.api.post_service_api_v2_submit_message(
@@ -688,7 +705,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             tags="missing-file",
         )
 
-        assert failure.status_code == 200
+        assert failure.status_code == HTTP_OK
 
         message = failure.json()
         self.message_ids.append(message["uid"])
@@ -697,7 +714,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             message["uid"]
         )
 
-        assert outputs.status_code == 200
+        assert outputs.status_code == HTTP_OK
         assert outputs.json()[0]["stage"] == "failed"
         assert outputs.json()[0]["failure"]
 
@@ -716,7 +733,7 @@ class ApiStateMachine(RuleBasedStateMachine):
 TestApiStateMachine = ApiStateMachine.TestCase
 
 TestApiStateMachine.settings = settings(
-    max_examples=10,
-    stateful_step_count=12,
+    max_examples=MAX_EXAMPLES,
+    stateful_step_count=STATEFUL_STEP_COUNT,
     deadline=None,
 )

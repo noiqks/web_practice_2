@@ -17,6 +17,63 @@ from src.store import SqliteStore
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CLI_PATH = Path(__file__).resolve().parent / "md5_hasher.py"
 
+CLI_TIMEOUT_SECONDS = 30
+REPORT_WINDOW_SECONDS = 7 * 60
+API_PREFIX = "/service/api/v2/"
+JSON_CONTENT_TYPE = "text/json"
+REQUIRED_LANGUAGE = "ru-RU"
+
+STAGE_COMPLETED = "completed"
+STAGE_FAILED = "failed"
+STAGE_SKIPPED = "skipped"
+STAGE_QUEUED = "queued"
+
+TEST_MODE_ENV = "MD5_TEST_MODE"
+TEST_MODE_ON = "1"
+
+HTTP_BAD_REQUEST = 400
+HTTP_NOT_FOUND = 404
+HTTP_NOT_ACCEPTABLE = 406
+HTTP_UNSUPPORTED_MEDIA_TYPE = 415
+
+DOCS_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MD5 Task API</title>
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+    <div id="swagger-ui"></div>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script>
+        const ui = SwaggerUIBundle({
+            url: "/openapi.json",
+            dom_id: "#swagger-ui",
+            presets: [
+                SwaggerUIBundle.presets.apis,
+                SwaggerUIBundle.SwaggerUIStandalonePreset
+            ],
+            layout: "BaseLayout",
+            requestInterceptor: (request) => {
+                if (request.url.includes("/service/api/v2/")) {
+                    request.headers = request.headers || {};
+                    request.headers["Accept-Language"] = "ru-RU";
+                    if (["POST", "PUT", "PATCH"].includes(
+                        (request.method || "GET").toUpperCase()
+                    )) {
+                        request.headers["Content-Type"] = "text/json";
+                    }
+                }
+                return request;
+            }
+        });
+    </script>
+</body>
+</html>
+"""
+
 
 def run_md5_cli(input_path):
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -33,19 +90,17 @@ def run_md5_cli(input_path):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=CLI_TIMEOUT_SECONDS,
             check=True,
         )
 
-        return output_path.read_text(
-            encoding="utf-8"
-        ).strip()
+        return output_path.read_text(encoding="utf-8").strip()
 
 
 def execute_message_task(store, message_uid, output_uid, input_path):
     try:
         response = run_md5_cli(input_path)
-        stage = "completed"
+        stage = STAGE_COMPLETED
         failure = ""
     except (
         OSError,
@@ -53,13 +108,10 @@ def execute_message_task(store, message_uid, output_uid, input_path):
         subprocess.CalledProcessError,
     ) as error:
         response = ""
-        stage = "failed"
+        stage = STAGE_FAILED
         failure = str(error)
 
-    store.update_message(
-        message_uid,
-        {"stage": stage},
-    )
+    store.update_message(message_uid, {"stage": stage})
 
     store.update_output(
         output_uid,
@@ -77,13 +129,13 @@ async def read_json_object(request):
         data = json.loads(raw_body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise HTTPException(
-            status_code=400,
+            status_code=HTTP_BAD_REQUEST,
             detail="Invalid JSON body",
         )
 
     if not isinstance(data, dict):
         raise HTTPException(
-            status_code=400,
+            status_code=HTTP_BAD_REQUEST,
             detail="JSON body must be an object",
         )
 
@@ -93,26 +145,25 @@ async def read_json_object(request):
 def register_middleware(app):
     @app.middleware("http")
     async def check_headers(request: Request, call_next):
-        if not request.url.path.startswith("/service/api/v2/"):
+        if not request.url.path.startswith(API_PREFIX):
             return await call_next(request)
 
         if (
             request.method in {"POST", "PUT", "PATCH"}
-            and request.headers.get("content-type") != "text/json"
+            and request.headers.get("content-type") != JSON_CONTENT_TYPE
         ):
             return JSONResponse(
-                status_code=415,
-                content={
-                    "detail": "Content-Type must be text/json"
-                },
+                status_code=HTTP_UNSUPPORTED_MEDIA_TYPE,
+                content={"detail": "Content-Type must be text/json"},
             )
 
-        if request.headers.get("accept-language") != "ru-RU":
+        if (
+            request.headers.get("accept-language")
+            != REQUIRED_LANGUAGE
+        ):
             return JSONResponse(
-                status_code=406,
-                content={
-                    "detail": "Accept-Language must be ru-RU"
-                },
+                status_code=HTTP_NOT_ACCEPTABLE,
+                content={"detail": "Accept-Language must be ru-RU"},
             )
 
         return await call_next(request)
@@ -121,10 +172,7 @@ def register_middleware(app):
 def register_submit_client_route(app):
     @app.post("/service/api/v2/submit-client")
     async def submit_client(platform: str, user_agent: str):
-        return app.state.store.add_client(
-            platform,
-            user_agent,
-        )
+        return app.state.store.add_client(platform, user_agent)
 
 
 def register_collect_client_route(app):
@@ -149,19 +197,19 @@ def validate_client_values(body, allowed_fields):
     for field, value in body.items():
         if field not in allowed_fields:
             raise HTTPException(
-                status_code=400,
+                status_code=HTTP_BAD_REQUEST,
                 detail="Unsupported client field",
             )
 
         if field == "created":
             if not isinstance(value, int):
                 raise HTTPException(
-                    status_code=400,
+                    status_code=HTTP_BAD_REQUEST,
                     detail="created must be an integer",
                 )
         elif not isinstance(value, str):
             raise HTTPException(
-                status_code=400,
+                status_code=HTTP_BAD_REQUEST,
                 detail=f"{field} must be a string",
             )
 
@@ -179,14 +227,11 @@ def register_adjust_client_route(app):
 
         validate_client_values(body, allowed_fields)
 
-        client = app.state.store.update_client(
-            uid,
-            body,
-        )
+        client = app.state.store.update_client(uid, body)
 
         if client is None:
             raise HTTPException(
-                status_code=404,
+                status_code=HTTP_NOT_FOUND,
                 detail="Client not found",
             )
 
@@ -209,7 +254,7 @@ def register_submit_message_route(app):
     ):
         if app.state.store.get_client(client) is None:
             raise HTTPException(
-                status_code=404,
+                status_code=HTTP_NOT_FOUND,
                 detail="Client not found",
             )
 
@@ -250,29 +295,26 @@ def register_collect_message_route(app):
             "launched": launched,
         }
 
-        return app.state.store.get_messages(
-            client,
-            filters,
-        )
+        return app.state.store.get_messages(client, filters)
 
 
 def validate_message_values(body, allowed_fields):
     for field, value in body.items():
         if field not in allowed_fields:
             raise HTTPException(
-                status_code=400,
+                status_code=HTTP_BAD_REQUEST,
                 detail="Unsupported message field",
             )
 
         if field == "launched":
             if not isinstance(value, int):
                 raise HTTPException(
-                    status_code=400,
+                    status_code=HTTP_BAD_REQUEST,
                     detail="launched must be an integer",
                 )
         elif not isinstance(value, str):
             raise HTTPException(
-                status_code=400,
+                status_code=HTTP_BAD_REQUEST,
                 detail=f"{field} must be a string",
             )
 
@@ -291,14 +333,11 @@ def register_adjust_message_route(app):
 
         validate_message_values(body, allowed_fields)
 
-        message = app.state.store.update_message(
-            uid,
-            body,
-        )
+        message = app.state.store.update_message(uid, body)
 
         if message is None:
             raise HTTPException(
-                status_code=404,
+                status_code=HTTP_NOT_FOUND,
                 detail="Message not found",
             )
 
@@ -316,14 +355,14 @@ def create_test_message(store, payload, client, tags):
         payload=payload,
         client=client,
         tags=tags,
-        stage="skipped",
+        stage=STAGE_SKIPPED,
         launched=0,
     )
 
     store.add_output(
         message=message["uid"],
         response="Task not executed in test mode",
-        stage="skipped",
+        stage=STAGE_SKIPPED,
         failure="",
     )
 
@@ -343,14 +382,14 @@ def create_real_message(
         payload=payload,
         client=client,
         tags=tags,
-        stage="queued",
+        stage=STAGE_QUEUED,
         launched=launched,
     )
 
     output = app.state.store.add_output(
         message=message["uid"],
         response="",
-        stage="queued",
+        stage=STAGE_QUEUED,
         failure="",
     )
 
@@ -385,16 +424,13 @@ def register_collect_output_route(app):
             "cache_hit": cache_hit,
         }
 
-        return app.state.store.get_outputs(
-            message,
-            filters,
-        )
+        return app.state.store.get_outputs(message, filters)
 
 
 def register_collect_report_route(app):
     @app.get("/service/api/v2/collect-report")
     async def collect_report():
-        cutoff = int(time.time()) - 7 * 60
+        cutoff = int(time.time()) - REPORT_WINDOW_SECONDS
 
         return app.state.store.get_report(cutoff)
 
@@ -407,51 +443,7 @@ def register_output_routes(app):
 def register_custom_docs(app):
     @app.get("/docs", include_in_schema=False)
     async def custom_docs():
-        return HTMLResponse(
-            """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>MD5 Task API</title>
-                <link rel="stylesheet"
-                      href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
-            </head>
-            <body>
-                <div id="swagger-ui"></div>
-
-                <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-
-                <script>
-                    const ui = SwaggerUIBundle({
-                        url: "/openapi.json",
-                        dom_id: "#swagger-ui",
-                        presets: [
-                            SwaggerUIBundle.presets.apis,
-                            SwaggerUIBundle.SwaggerUIStandalonePreset
-                        ],
-                        layout: "BaseLayout",
-
-                        requestInterceptor: (request) => {
-                            if (request.url.includes("/service/api/v2/")) {
-                                request.headers = request.headers || {};
-
-                                request.headers["Accept-Language"] = "ru-RU";
-
-                                if (["POST", "PUT", "PATCH"].includes(
-                                    (request.method || "GET").toUpperCase()
-                                )) {
-                                    request.headers["Content-Type"] = "text/json";
-                                }
-                            }
-
-                            return request;
-                        }
-                    });
-                </script>
-            </body>
-            </html>
-            """
-        )
+        return HTMLResponse(DOCS_HTML)
 
 
 def custom_openapi(app):
@@ -473,7 +465,7 @@ def custom_openapi(app):
         operation["requestBody"] = {
             "required": True,
             "content": {
-                "text/json": {
+                JSON_CONTENT_TYPE: {
                     "schema": {
                         "type": "object",
                         "additionalProperties": True,
@@ -496,9 +488,7 @@ def create_app(
         docs_url=None,
     )
 
-    engine, session_factory = create_database(
-        database_url
-    )
+    engine, session_factory = create_database(database_url)
 
     Base.metadata.create_all(engine)
 
@@ -507,7 +497,7 @@ def create_app(
 
     if test_mode is None:
         app.state.test_mode = (
-            os.getenv("MD5_TEST_MODE", "0") == "1"
+            os.getenv(TEST_MODE_ENV, "0") == TEST_MODE_ON
         )
     else:
         app.state.test_mode = test_mode
