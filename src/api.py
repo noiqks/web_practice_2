@@ -36,43 +36,50 @@ HTTP_NOT_FOUND = 404
 HTTP_NOT_ACCEPTABLE = 406
 HTTP_UNSUPPORTED_MEDIA_TYPE = 415
 
-DOCS_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>MD5 Task API</title>
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
-</head>
-<body>
-    <div id="swagger-ui"></div>
-    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-    <script>
-        const ui = SwaggerUIBundle({
-            url: "/openapi.json",
-            dom_id: "#swagger-ui",
-            presets: [
-                SwaggerUIBundle.presets.apis,
-                SwaggerUIBundle.SwaggerUIStandalonePreset
-            ],
-            layout: "BaseLayout",
-            requestInterceptor: (request) => {
-                if (request.url.includes("/service/api/v2/")) {
-                    request.headers = request.headers || {};
-                    request.headers["Accept-Language"] = "ru-RU";
-                    if (["POST", "PUT", "PATCH"].includes(
-                        (request.method || "GET").toUpperCase()
-                    )) {
-                        request.headers["Content-Type"] = "text/json";
-                    }
-                }
-                return request;
-            }
-        });
-    </script>
-</body>
-</html>
-"""
+DOCS_HTML = (
+    "<!DOCTYPE html>\n"
+    "<html>\n"
+    "<head>\n"
+    "    <title>MD5 Task API</title>\n"
+    '    <link rel="stylesheet"\n'
+    '          href="https://cdn.jsdelivr.net/npm/'
+    'swagger-ui-dist@5/swagger-ui.css">\n'
+    "</head>\n"
+    "<body>\n"
+    '    <div id="swagger-ui"></div>\n'
+    '    <script src="https://cdn.jsdelivr.net/npm/'
+    'swagger-ui-dist@5/swagger-ui-bundle.js"></script>\n'
+    "    <script>\n"
+    "        const ui = SwaggerUIBundle({\n"
+    '            url: "/openapi.json",\n'
+    '            dom_id: "#swagger-ui",\n'
+    "            presets: [\n"
+    "                SwaggerUIBundle.presets.apis,\n"
+    "                SwaggerUIBundle.SwaggerUIStandalonePreset\n"
+    "            ],\n"
+    '            layout: "BaseLayout",\n'
+    "            requestInterceptor: (request) => {\n"
+    '                if (request.url.includes('
+    '"/service/api/v2/")) {\n'
+    "                    request.headers = "
+    "request.headers || {};\n"
+    '                    request.headers["Accept-Language"] '
+    '= "ru-RU";\n'
+    '                    if (["POST", "PUT", "PATCH"].includes(\n'
+    "                        (request.method || "
+    '"GET").toUpperCase()\n'
+    "                    )) {\n"
+    '                        request.headers["Content-Type"] '
+    '= "text/json";\n'
+    "                    }\n"
+    "                }\n"
+    "                return request;\n"
+    "            }\n"
+    "        });\n"
+    "    </script>\n"
+    "</body>\n"
+    "</html>\n"
+)
 
 
 def run_md5_cli(input_path):
