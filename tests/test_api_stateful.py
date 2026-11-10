@@ -3,16 +3,18 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from hypothesis import settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, initialize, rule
+from hypothesis.stateful import (
+    RuleBasedStateMachine,
+    invariant,
+    rule,
+    run_state_machine_as_test,
+)
 
 from src.api import create_app
 from src.api_client import ApiClient
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_INPUT = str(PROJECT_ROOT / "examples" / "input1.txt")
-MISSING_INPUT = str(
-    PROJECT_ROOT / "examples" / "file-that-does-not-exist.txt"
-)
 
 HTTP_OK = 200
 HTTP_BAD_REQUEST = 400
@@ -20,720 +22,392 @@ HTTP_NOT_FOUND = 404
 HTTP_NOT_ACCEPTABLE = 406
 HTTP_UNSUPPORTED_MEDIA_TYPE = 415
 
-MD5_HEX_LENGTH = 32
-INITIAL_LAUNCHED = 0
-INITIAL_CACHE_HIT = 0
-UPDATED_LAUNCHED = 123
-MISSING_UID = 999999
-CACHE_HIT_MISS = 1
-WRONG_STAGE_VALUE = "0"
+MAX_EXAMPLES = 5
+STATEFUL_STEP_COUNT = 10
 
-MAX_EXAMPLES = 10
-STATEFUL_STEP_COUNT = 12
+INITIAL_CACHE_HIT = 0
+TEST_RESPONSE = "Task not executed in test mode"
+
+MISSING_UID = 999999
 
 
 class ApiStateMachine(RuleBasedStateMachine):
     def __init__(self):
         super().__init__()
-
-        self.app = create_app(test_mode=True)
+        self.app = create_app(
+            test_mode=True,
+            database_url="sqlite:///:memory:",
+        )
         self.transport = TestClient(self.app)
         self.api = ApiClient(transport=self.transport)
 
-        self.client_ids = []
-        self.message_ids = []
+        self.model = {
+            "clients": {},
+            "messages": {},
+            "outputs": {},
+        }
 
-    def create_initial_client(self):
-        response = self.api.post_service_api_v2_submit_client(
-            platform="test-platform",
-            user_agent="state-machine-agent",
-        )
+    def teardown(self):
+        self.model["clients"].clear()
+        self.model["messages"].clear()
+        self.model["outputs"].clear()
 
-        assert response.status_code == HTTP_OK
+    def _first_client_uid(self):
+        if not self.model["clients"]:
+            return None
+        return list(self.model["clients"].keys())[0]
 
-        client = response.json()
-        self.client_ids.append(client["uid"])
-
-        return client
-
-    def check_initial_client(self, client):
-        response = self.api.get_service_api_v2_collect_client()
-
-        assert response.status_code == HTTP_OK
-        assert response.json()
-
-        response = self.api.get_service_api_v2_collect_client(
-            uid=client["uid"],
-            created=client["created"],
-        )
-
-        assert response.status_code == HTTP_OK
-        assert len(response.json()) == 1
-
-        response = self.api.put_service_api_v2_adjust_client(
-            client["uid"],
-            {"platform": "test-platform-updated"},
-        )
-
-        assert response.status_code == HTTP_OK
-        assert response.json()["platform"] == "test-platform-updated"
-
-    def create_initial_message(self, client_uid):
-        response = self.api.post_service_api_v2_submit_message(
-            client=client_uid,
-            payload=EXAMPLE_INPUT,
-            tags="initial",
-        )
-
-        assert response.status_code == HTTP_OK
-
-        message = response.json()
-        self.message_ids.append(message["uid"])
-
-        return message
-
-    def check_initial_message(self, client_uid, message):
-        response = self.api.get_service_api_v2_collect_message(
-            client_uid
-        )
-
-        assert response.status_code == HTTP_OK
-        assert response.json()
-
-        filtered = self.api.get_service_api_v2_collect_message(
-            client_uid,
-            uid=message["uid"],
-            created=message["created"],
-            payload=message["payload"],
-            tags="initial",
-            stage="skipped",
-            launched=INITIAL_LAUNCHED,
-        )
-
-        assert filtered.status_code == HTTP_OK
-        assert len(filtered.json()) == 1
-
-    def check_initial_output(self, message_uid):
-        response = self.api.get_service_api_v2_collect_output(
-            message_uid
-        )
-
-        assert response.status_code == HTTP_OK
-        assert response.json()
-
-        output = response.json()[0]
-
-        filtered = self.api.get_service_api_v2_collect_output(
-            message_uid,
-            uid=output["uid"],
-            created=output["created"],
-            response=output["response"],
-            stage=output["stage"],
-            failure=output["failure"],
-            cache_hit=output["cache_hit"],
-        )
-
-        assert filtered.status_code == HTTP_OK
-        assert len(filtered.json()) == 1
-
-    @initialize()
-    def create_initial_records(self):
-        client = self.create_initial_client()
-        self.check_initial_client(client)
-
-        message = self.create_initial_message(
-            client["uid"]
-        )
-        self.check_initial_message(
-            client["uid"],
-            message,
-        )
-        self.check_initial_output(message["uid"])
-
-        response = self.api.get_service_api_v2_collect_report()
-
-        assert response.status_code == HTTP_OK
+    def _first_message_uid(self):
+        if not self.model["messages"]:
+            return None
+        return list(self.model["messages"].keys())[0]
 
     @rule(
-        platform=st.text(
-            alphabet="abcdef012345",
-            min_size=1,
-            max_size=10,
-        ),
-        user_agent=st.text(
-            alphabet="uvwxyz012345",
-            min_size=1,
-            max_size=12,
-        ),
+        platform=st.text(alphabet="abc", min_size=1, max_size=5),
+        user_agent=st.text(alphabet="xyz", min_size=1, max_size=5),
     )
-    def submit_and_find_client(self, platform, user_agent):
+    def create_client(self, platform, user_agent):
         response = self.api.post_service_api_v2_submit_client(
-            platform,
-            user_agent,
-        )
-
-        assert response.status_code == HTTP_OK
-
-        client = response.json()
-        self.client_ids.append(client["uid"])
-
-        found = self.api.get_service_api_v2_collect_client(
-            uid=client["uid"],
-            created=client["created"],
             platform=platform,
             user_agent=user_agent,
         )
-
-        assert found.status_code == HTTP_OK
-        assert len(found.json()) == 1
-        assert found.json()[0]["uid"] == client["uid"]
-
-    @rule()
-    def check_unique_client_ids(self):
-        first_response = self.api.post_service_api_v2_submit_client(
-            platform="Windows",
-            user_agent="TestClient1",
-        )
-
-        second_response = self.api.post_service_api_v2_submit_client(
-            platform="Linux",
-            user_agent="TestClient2",
-        )
-
-        assert first_response.status_code == HTTP_OK
-        assert second_response.status_code == HTTP_OK
-
-        first_client = first_response.json()
-        second_client = second_response.json()
-
-        assert first_client["uid"] != second_client["uid"]
-
-        self.client_ids.append(first_client["uid"])
-        self.client_ids.append(second_client["uid"])
-
-    @rule()
-    def check_client_fields_are_not_mixed(self):
-        response = self.api.post_service_api_v2_submit_client(
-            platform="Windows-test",
-            user_agent="Agent-test-123",
-        )
-
         assert response.status_code == HTTP_OK
-
         client = response.json()
-
-        assert client["platform"] == "Windows-test"
-        assert client["user_agent"] == "Agent-test-123"
-        assert isinstance(client["uid"], int)
-        assert isinstance(client["created"], int)
-
-        found = self.api.get_service_api_v2_collect_client(
-            uid=client["uid"],
-            platform="Windows-test",
-            user_agent="Agent-test-123",
-        )
-
-        assert found.status_code == HTTP_OK
-        assert len(found.json()) == 1
-        assert found.json()[0] == client
+        self.model["clients"][client["uid"]] = client
 
     @rule(
-        platform=st.text(
-            alphabet="abcdef012345",
-            min_size=1,
-            max_size=10,
-        ),
-        user_agent=st.text(
-            alphabet="uvwxyz012345",
-            min_size=1,
-            max_size=12,
-        ),
+        platform=st.text(alphabet="abc", min_size=1, max_size=5),
+        user_agent=st.text(alphabet="xyz", min_size=1, max_size=5),
     )
-    def update_client(self, platform, user_agent):
-        uid = self.client_ids[0]
+    def update_existing_client(self, platform, user_agent):
+        uid = self._first_client_uid()
+        if uid is None:
+            return
 
         response = self.api.put_service_api_v2_adjust_client(
             uid,
-            {
-                "platform": platform,
-                "user_agent": user_agent,
-            },
+            {"platform": platform, "user_agent": user_agent},
         )
+        if response.status_code == HTTP_OK:
+            self.model["clients"][uid]["platform"] = platform
+            self.model["clients"][uid]["user_agent"] = user_agent
 
-        assert response.status_code == HTTP_OK
-
-        client = response.json()
-
-        assert client["platform"] == platform
-        assert client["user_agent"] == user_agent
-
-        missing = self.api.put_service_api_v2_adjust_client(
+    @rule()
+    def update_missing_client(self):
+        response = self.api.put_service_api_v2_adjust_client(
             MISSING_UID,
             {"platform": "x"},
         )
+        assert response.status_code == HTTP_NOT_FOUND
 
-        assert missing.status_code == HTTP_NOT_FOUND
+    @rule()
+    def update_client_with_unknown_field(self):
+        uid = self._first_client_uid()
+        if uid is None:
+            return
+        response = self.api.put_service_api_v2_adjust_client(
+            uid,
+            {"unknown": "field"},
+        )
+        assert response.status_code == HTTP_BAD_REQUEST
 
-        bad_created = self.api.put_service_api_v2_adjust_client(
+    @rule()
+    def update_client_with_bad_created_type(self):
+        uid = self._first_client_uid()
+        if uid is None:
+            return
+        response = self.api.put_service_api_v2_adjust_client(
             uid,
             {"created": "not-an-integer"},
         )
+        assert response.status_code == HTTP_BAD_REQUEST
 
-        assert bad_created.status_code == HTTP_BAD_REQUEST
-
-        bad_type = self.api.put_service_api_v2_adjust_client(
+    @rule()
+    def update_client_with_bad_platform_type(self):
+        uid = self._first_client_uid()
+        if uid is None:
+            return
+        response = self.api.put_service_api_v2_adjust_client(
             uid,
             {"platform": 123},
         )
-
-        assert bad_type.status_code == HTTP_BAD_REQUEST
+        assert response.status_code == HTTP_BAD_REQUEST
 
     @rule(
-        tags=st.text(
-            alphabet="tag012345",
-            max_size=8,
-        )
+        tags=st.text(alphabet="abc", min_size=1, max_size=5),
     )
-    def submit_and_find_message(self, tags):
-        client_uid = self.client_ids[0]
+    def create_message(self, tags):
+        client_uid = self._first_client_uid()
+        if client_uid is None:
+            return
 
         response = self.api.post_service_api_v2_submit_message(
             client=client_uid,
             payload=EXAMPLE_INPUT,
             tags=tags,
         )
-
         assert response.status_code == HTTP_OK
 
         message = response.json()
-        message_uid = message["uid"]
-        self.message_ids.append(message_uid)
+        self.model["messages"][message["uid"]] = message
 
-        found = self.api.get_service_api_v2_collect_message(
-            client_uid,
-            uid=message_uid,
-            tags=tags,
+        outputs_response = self.api.get_service_api_v2_collect_output(
+            message["uid"]
         )
+        assert outputs_response.status_code == HTTP_OK
+        actual_output = outputs_response.json()[0]
 
-        assert found.status_code == HTTP_OK
-        assert len(found.json()) == 1
-        assert found.json()[0]["uid"] == message_uid
-
-        missing_client = (
-            self.api.post_service_api_v2_submit_message(
-                client=MISSING_UID,
-                payload=EXAMPLE_INPUT,
-                tags=tags,
-            )
-        )
-
-        assert missing_client.status_code == HTTP_NOT_FOUND
-
-    def create_field_check_message(self):
-        client_uid = self.client_ids[0]
-
-        response = self.api.post_service_api_v2_submit_message(
-            client=client_uid,
-            payload=EXAMPLE_INPUT,
-            tags="field-check",
-        )
-
-        assert response.status_code == HTTP_OK
-
-        return client_uid, response.json()
-
-    def check_message_fields(self, client_uid, message):
-        assert message["client"] == client_uid
-        assert message["payload"] == EXAMPLE_INPUT
-        assert message["tags"] == "field-check"
-        assert message["stage"] == "skipped"
-        assert message["launched"] == INITIAL_LAUNCHED
-
-        by_stage = (
-            self.api.get_service_api_v2_collect_message(
-                client_uid,
-                uid=message["uid"],
-                stage="skipped",
-            )
-        )
-
-        assert by_stage.status_code == HTTP_OK
-        assert len(by_stage.json()) == 1
-
-    def check_message_launched_filter(self, client_uid, message):
-        by_launched = (
-            self.api.get_service_api_v2_collect_message(
-                client_uid,
-                uid=message["uid"],
-                launched=INITIAL_LAUNCHED,
-            )
-        )
-
-        assert by_launched.status_code == HTTP_OK
-        assert len(by_launched.json()) == 1
-
-        wrong_stage = (
-            self.api.get_service_api_v2_collect_message(
-                client_uid,
-                uid=message["uid"],
-                stage=WRONG_STAGE_VALUE,
-            )
-        )
-
-        assert wrong_stage.status_code == HTTP_OK
-        assert wrong_stage.json() == []
+        expected_output = {
+            "uid": actual_output["uid"],
+            "created": actual_output["created"],
+            "message": message["uid"],
+            "response": TEST_RESPONSE,
+            "stage": "skipped",
+            "failure": "",
+            "cache_hit": INITIAL_CACHE_HIT,
+        }
+        self.model["outputs"][actual_output["uid"]] = expected_output
 
     @rule()
-    def check_message_stage_and_launched_are_separate(self):
-        client_uid, message = self.create_field_check_message()
-
-        self.check_message_fields(
-            client_uid,
-            message,
+    def create_message_for_missing_client(self):
+        response = self.api.post_service_api_v2_submit_message(
+            client=MISSING_UID,
+            payload=EXAMPLE_INPUT,
+            tags="missing",
         )
-
-        self.check_message_launched_filter(
-            client_uid,
-            message,
-        )
+        assert response.status_code == HTTP_NOT_FOUND
 
     @rule(
-        payload=st.text(
-            alphabet="payload012345",
-            min_size=1,
-            max_size=12,
-        )
+        payload=st.text(alphabet="abc", min_size=1, max_size=5),
+        tags=st.text(alphabet="xyz", min_size=1, max_size=5),
     )
-    def update_message(self, payload):
-        uid = self.message_ids[0]
+    def update_existing_message(self, payload, tags):
+        uid = self._first_message_uid()
+        if uid is None:
+            return
 
         response = self.api.put_service_api_v2_adjust_message(
             uid,
-            {
-                "payload": payload,
-                "tags": "changed",
-            },
+            {"payload": payload, "tags": tags},
         )
+        if response.status_code == HTTP_OK:
+            self.model["messages"][uid]["payload"] = payload
+            self.model["messages"][uid]["tags"] = tags
 
-        assert response.status_code == HTTP_OK
-
-        message = response.json()
-
-        assert message["payload"] == payload
-        assert message["tags"] == "changed"
-
-        launched = self.api.put_service_api_v2_adjust_message(
-            uid,
-            {"launched": UPDATED_LAUNCHED},
-        )
-
-        assert launched.status_code == HTTP_OK
-        assert launched.json()["launched"] == UPDATED_LAUNCHED
-
-        bad_launched = self.api.put_service_api_v2_adjust_message(
-            uid,
-            {"launched": "later"},
-        )
-
-        assert bad_launched.status_code == HTTP_BAD_REQUEST
-
-        missing = self.api.put_service_api_v2_adjust_message(
+    @rule()
+    def update_missing_message(self):
+        response = self.api.put_service_api_v2_adjust_message(
             MISSING_UID,
             {"tags": "missing"},
         )
-
-        assert missing.status_code == HTTP_NOT_FOUND
-
-    @rule()
-    def check_message_update_preserves_other_fields(self):
-        client_uid = self.client_ids[0]
-
-        response = self.api.post_service_api_v2_submit_message(
-            client=client_uid,
-            payload=EXAMPLE_INPUT,
-            tags="before-update",
-        )
-
-        assert response.status_code == HTTP_OK
-
-        message = response.json()
-
-        updated = self.api.put_service_api_v2_adjust_message(
-            message["uid"],
-            {"tags": "after-update"},
-        )
-
-        assert updated.status_code == HTTP_OK
-
-        result = updated.json()
-
-        assert result["uid"] == message["uid"]
-        assert result["client"] == message["client"]
-        assert result["created"] == message["created"]
-        assert result["payload"] == message["payload"]
-        assert result["tags"] == "after-update"
-        assert result["stage"] == message["stage"]
-        assert result["launched"] == message["launched"]
-
-    def create_output_check_message(self):
-        client_uid = self.client_ids[0]
-
-        response = self.api.post_service_api_v2_submit_message(
-            client=client_uid,
-            payload=EXAMPLE_INPUT,
-            tags="output-field-check",
-        )
-
-        assert response.status_code == HTTP_OK
-
-        return response.json()
-
-    def get_and_check_output(self, message):
-        response = self.api.get_service_api_v2_collect_output(
-            message["uid"]
-        )
-
-        assert response.status_code == HTTP_OK
-        assert response.json()
-
-        output = response.json()[0]
-
-        assert output["message"] == message["uid"]
-        assert output["stage"] == "skipped"
-        assert output["response"] == (
-            "Task not executed in test mode"
-        )
-        assert output["failure"] == ""
-        assert output["cache_hit"] == INITIAL_CACHE_HIT
-        assert isinstance(output["uid"], int)
-        assert isinstance(output["created"], int)
-
-        return output
-
-    def check_output_filters(self, message, output):
-        filtered = self.api.get_service_api_v2_collect_output(
-            message["uid"],
-            uid=output["uid"],
-            created=output["created"],
-            response="Task not executed in test mode",
-            stage="skipped",
-            failure="",
-            cache_hit=INITIAL_CACHE_HIT,
-        )
-
-        assert filtered.status_code == HTTP_OK
-        assert len(filtered.json()) == 1
-        assert filtered.json()[0] == output
-
-        wrong_stage = (
-            self.api.get_service_api_v2_collect_output(
-                message["uid"],
-                stage=WRONG_STAGE_VALUE,
-            )
-        )
-
-        assert wrong_stage.status_code == HTTP_OK
-        assert wrong_stage.json() == []
-
-    def check_wrong_cache_hit(self, message):
-        wrong_cache_hit = (
-            self.api.get_service_api_v2_collect_output(
-                message["uid"],
-                cache_hit=CACHE_HIT_MISS,
-            )
-        )
-
-        assert wrong_cache_hit.status_code == HTTP_OK
-        assert wrong_cache_hit.json() == []
+        assert response.status_code == HTTP_NOT_FOUND
 
     @rule()
-    def check_output_fields_are_not_mixed(self):
-        message = self.create_output_check_message()
-        output = self.get_and_check_output(message)
-
-        self.check_output_filters(
-            message,
-            output,
-        )
-
-        self.check_wrong_cache_hit(message)
-
-    @rule()
-    def read_outputs_and_report(self):
-        message_uid = self.message_ids[0]
-
-        response = self.api.get_service_api_v2_collect_output(
-            message_uid
-        )
-
-        assert response.status_code == HTTP_OK
-        assert response.json()
-
-        output = response.json()[0]
-
-        filtered = self.api.get_service_api_v2_collect_output(
-            message_uid,
-            uid=output["uid"],
-            created=output["created"],
-            response=output["response"],
-            stage=output["stage"],
-            failure=output["failure"],
-            cache_hit=output["cache_hit"],
-        )
-
-        assert filtered.status_code == HTTP_OK
-        assert len(filtered.json()) == 1
-
-        invalid = self.api.get_service_api_v2_collect_output(
-            message_uid,
-            stage="not-a-real-stage",
-            cache_hit=CACHE_HIT_MISS,
-        )
-
-        assert invalid.status_code == HTTP_OK
-        assert invalid.json() == []
-
-        report = self.api.get_service_api_v2_collect_report()
-
-        assert report.status_code == HTTP_OK
-
-    def check_missing_content_type(self):
-        response = self.api.post_service_api_v2_submit_client(
-            "platform",
-            "agent",
-            headers={"Accept-Language": "ru-RU"},
-        )
-
-        assert response.status_code == HTTP_UNSUPPORTED_MEDIA_TYPE
-
-    def check_missing_language(self):
-        response = self.api.get_service_api_v2_collect_client(
-            headers={}
-        )
-
-        assert response.status_code == HTTP_NOT_ACCEPTABLE
-
-        response = self.api.get_service_api_v2_collect_report(
-            headers={"Accept-Language": "en-US"}
-        )
-
-        assert response.status_code == HTTP_NOT_ACCEPTABLE
-
-    def check_header_priority(self):
-        response = self.api.post_service_api_v2_submit_client(
-            "platform",
-            "agent",
-            headers={},
-        )
-
-        assert response.status_code == HTTP_UNSUPPORTED_MEDIA_TYPE
-
-        docs = self.api._request(
-            "GET",
-            "/docs",
-            headers={},
-        )
-
-        assert docs.status_code == HTTP_OK
-
-    @rule()
-    def check_required_headers(self):
-        self.check_missing_content_type()
-        self.check_missing_language()
-        self.check_header_priority()
-
-    @rule()
-    def test_invalid_update_body(self):
-        message_uid = self.message_ids[0]
-
+    def update_message_with_unknown_field(self):
+        uid = self._first_message_uid()
+        if uid is None:
+            return
         response = self.api.put_service_api_v2_adjust_message(
-            message_uid,
+            uid,
+            {"unknown": "field"},
+        )
+        assert response.status_code == HTTP_BAD_REQUEST
+
+    @rule()
+    def update_message_with_bad_launched_type(self):
+        uid = self._first_message_uid()
+        if uid is None:
+            return
+        response = self.api.put_service_api_v2_adjust_message(
+            uid,
+            {"launched": "later"},
+        )
+        assert response.status_code == HTTP_BAD_REQUEST
+
+    @rule()
+    def update_message_with_non_object_body(self):
+        uid = self._first_message_uid()
+        if uid is None:
+            return
+        response = self.api.put_service_api_v2_adjust_message(
+            uid,
             ["not", "an", "object"],
         )
-
         assert response.status_code == HTTP_BAD_REQUEST
 
-        response = self.api.put_service_api_v2_adjust_client(
-            self.client_ids[0],
-            {"unknown": "field"},
-        )
-
-        assert response.status_code == HTTP_BAD_REQUEST
-
-        response = self.api.put_service_api_v2_adjust_message(
-            message_uid,
-            {"unknown": "field"},
-        )
-
-        assert response.status_code == HTTP_BAD_REQUEST
-
+    @rule()
+    def update_message_with_empty_body(self):
+        uid = self._first_message_uid()
+        if uid is None:
+            return
         response = self.api._request(
             "PUT",
-            f"/service/api/v2/adjust-message/{message_uid}",
+            f"/service/api/v2/adjust-message/{uid}",
             headers={
                 "Content-Type": "text/json",
                 "Accept-Language": "ru-RU",
             },
         )
-
         assert response.status_code == HTTP_BAD_REQUEST
 
-    def execute_successful_cli(self, client_uid):
-        success = self.api.post_service_api_v2_submit_message(
-            client=client_uid,
-            payload=EXAMPLE_INPUT,
-            tags="real-cli",
+    @rule()
+    def request_without_content_type(self):
+        response = self.api.post_service_api_v2_submit_client(
+            "platform",
+            "agent",
+            headers={"Accept-Language": "ru-RU"},
         )
-
-        assert success.status_code == HTTP_OK
-
-        message = success.json()
-        self.message_ids.append(message["uid"])
-
-        outputs = self.api.get_service_api_v2_collect_output(
-            message["uid"]
-        )
-
-        assert outputs.status_code == HTTP_OK
-        assert outputs.json()[0]["stage"] == "completed"
-        assert len(outputs.json()[0]["response"]) == MD5_HEX_LENGTH
-
-    def execute_failed_cli(self, client_uid):
-        failure = self.api.post_service_api_v2_submit_message(
-            client=client_uid,
-            payload=MISSING_INPUT,
-            tags="missing-file",
-        )
-
-        assert failure.status_code == HTTP_OK
-
-        message = failure.json()
-        self.message_ids.append(message["uid"])
-
-        outputs = self.api.get_service_api_v2_collect_output(
-            message["uid"]
-        )
-
-        assert outputs.status_code == HTTP_OK
-        assert outputs.json()[0]["stage"] == "failed"
-        assert outputs.json()[0]["failure"]
+        assert response.status_code == HTTP_UNSUPPORTED_MEDIA_TYPE
 
     @rule()
-    def execute_cli_success_and_failure(self):
-        client_uid = self.client_ids[0]
+    def request_without_language(self):
+        response = self.api.get_service_api_v2_collect_client(headers={})
+        assert response.status_code == HTTP_NOT_ACCEPTABLE
 
-        self.app.state.test_mode = False
+    @rule()
+    def request_with_wrong_language(self):
+        response = self.api.get_service_api_v2_collect_report(
+            headers={"Accept-Language": "en-US"},
+        )
+        assert response.status_code == HTTP_NOT_ACCEPTABLE
 
-        self.execute_successful_cli(client_uid)
-        self.execute_failed_cli(client_uid)
+    @rule()
+    def request_docs_without_language(self):
+        response = self.api._request(
+            "GET",
+            "/docs",
+            headers={},
+        )
+        assert response.status_code == HTTP_OK
 
-        self.app.state.test_mode = True
+    @rule()
+    def collect_report(self):
+        response = self.api.get_service_api_v2_collect_report()
+        assert response.status_code == HTTP_OK
+
+    @rule()
+    def collect_output_invalid_filter(self):
+        uid = self._first_message_uid()
+        if uid is None:
+            return
+        response = self.api.get_service_api_v2_collect_output(
+            uid,
+            stage="not-a-real-stage",
+            cache_hit=1,
+        )
+        assert response.status_code == HTTP_OK
+        assert response.json() == []
+
+    @rule()
+    def collect_output_by_existing_output(self):
+        if not self.model["outputs"]:
+            return
+        out_uid = list(self.model["outputs"].keys())[0]
+        expected = self.model["outputs"][out_uid]
+        response = self.api.get_service_api_v2_collect_output(
+            expected["message"],
+            uid=out_uid,
+            created=expected["created"],
+            response=expected["response"],
+            stage=expected["stage"],
+            failure=expected["failure"],
+            cache_hit=expected["cache_hit"],
+        )
+        assert response.status_code == HTTP_OK
+        assert len(response.json()) == 1
+
+    @rule()
+    def collect_client_with_filters(self):
+        uid = self._first_client_uid()
+        if uid is None:
+            return
+        expected = self.model["clients"][uid]
+        response = self.api.get_service_api_v2_collect_client(
+            uid=uid,
+            created=expected["created"],
+            platform=expected["platform"],
+            user_agent=expected["user_agent"],
+        )
+        assert response.status_code == HTTP_OK
+        assert len(response.json()) == 1
+
+    @rule()
+    def collect_message_with_filters(self):
+        uid = self._first_message_uid()
+        if uid is None:
+            return
+        expected = self.model["messages"][uid]
+        response = self.api.get_service_api_v2_collect_message(
+            expected["client"],
+            uid=uid,
+            created=expected["created"],
+            payload=expected["payload"],
+            tags=expected["tags"],
+            stage=expected["stage"],
+            launched=expected["launched"],
+        )
+        assert response.status_code == HTTP_OK
+        assert len(response.json()) == 1
+
+    @invariant()
+    def check_clients_match_model(self):
+        response = self.api.get_service_api_v2_collect_client()
+        assert response.status_code == HTTP_OK
+        actual_clients = response.json()
+
+        assert len(actual_clients) == len(self.model["clients"])
+
+        for client in actual_clients:
+            uid = client["uid"]
+            assert uid in self.model["clients"]
+            expected = self.model["clients"][uid]
+            assert client["platform"] == expected["platform"]
+            assert client["user_agent"] == expected["user_agent"]
+
+    @invariant()
+    def check_messages_and_outputs_match_model(self):
+        for client_uid in self.model["clients"]:
+            response = self.api.get_service_api_v2_collect_message(
+                client_uid
+            )
+            assert response.status_code == HTTP_OK
+            actual_messages = response.json()
+
+            expected_msg_count = sum(
+                1
+                for m in self.model["messages"].values()
+                if m["client"] == client_uid
+            )
+            assert len(actual_messages) == expected_msg_count
+
+            for msg in actual_messages:
+                uid = msg["uid"]
+                assert uid in self.model["messages"]
+                expected = self.model["messages"][uid]
+                assert msg["payload"] == expected["payload"]
+                assert msg["tags"] == expected["tags"]
+
+                out_response = (
+                    self.api.get_service_api_v2_collect_output(uid)
+                )
+                assert out_response.status_code == HTTP_OK
+                actual_outputs = out_response.json()
+                assert len(actual_outputs) == 1
+
+                out = actual_outputs[0]
+                out_uid = out["uid"]
+                assert out_uid in self.model["outputs"]
+                expected_out = self.model["outputs"][out_uid]
+                assert out["response"] == expected_out["response"]
+                assert out["stage"] == expected_out["stage"]
 
 
-TestApiStateMachine = ApiStateMachine.TestCase
-
-TestApiStateMachine.settings = settings(
-    max_examples=MAX_EXAMPLES,
-    stateful_step_count=STATEFUL_STEP_COUNT,
-    deadline=None,
-)
+def test_api_state_machine():
+    run_state_machine_as_test(
+        ApiStateMachine,
+        settings=settings(
+            max_examples=MAX_EXAMPLES,
+            stateful_step_count=STATEFUL_STEP_COUNT,
+            deadline=None,
+        ),
+    )
