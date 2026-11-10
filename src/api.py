@@ -7,7 +7,8 @@ import time
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from src.database import create_database
 from src.models import Base
@@ -403,6 +404,88 @@ def register_output_routes(app):
     register_collect_report_route(app)
 
 
+def register_custom_docs(app):
+    @app.get("/docs", include_in_schema=False)
+    async def custom_docs():
+        return HTMLResponse(
+            """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>MD5 Task API</title>
+                <link rel="stylesheet"
+                      href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+            </head>
+            <body>
+                <div id="swagger-ui"></div>
+
+                <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+
+                <script>
+                    const ui = SwaggerUIBundle({
+                        url: "/openapi.json",
+                        dom_id: "#swagger-ui",
+                        presets: [
+                            SwaggerUIBundle.presets.apis,
+                            SwaggerUIBundle.SwaggerUIStandalonePreset
+                        ],
+                        layout: "BaseLayout",
+
+                        requestInterceptor: (request) => {
+                            if (request.url.includes("/service/api/v2/")) {
+                                request.headers = request.headers || {};
+
+                                request.headers["Accept-Language"] = "ru-RU";
+
+                                if (["POST", "PUT", "PATCH"].includes(
+                                    (request.method || "GET").toUpperCase()
+                                )) {
+                                    request.headers["Content-Type"] = "text/json";
+                                }
+                            }
+
+                            return request;
+                        }
+                    });
+                </script>
+            </body>
+            </html>
+            """
+        )
+
+
+def custom_openapi(app):
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        routes=app.routes,
+    )
+
+    for path in [
+        "/service/api/v2/adjust-client/{uid}",
+        "/service/api/v2/adjust-message/{uid}",
+    ]:
+        operation = openapi_schema["paths"][path]["put"]
+
+        operation["requestBody"] = {
+            "required": True,
+            "content": {
+                "text/json": {
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": True,
+                    }
+                }
+            },
+        }
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
 def create_app(
     test_mode=None,
     database_url="sqlite:///md5_tasks.db",
@@ -410,6 +493,7 @@ def create_app(
     app = FastAPI(
         title="MD5 Task API",
         version="3.0",
+        docs_url=None,
     )
 
     engine, session_factory = create_database(
@@ -432,6 +516,10 @@ def create_app(
     register_client_routes(app)
     register_message_routes(app)
     register_output_routes(app)
+
+    app.openapi = lambda: custom_openapi(app)
+
+    register_custom_docs(app)
 
     return app
 
